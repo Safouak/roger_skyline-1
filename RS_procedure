@@ -1,0 +1,170 @@
+___ V.1 ________________________________________________________________________
+OK
+
+___ V.2 ________________________________________________________________________
+01.	VM Creation
+	Name		: RS1
+	Type		: Linux
+	Version		: Debian (64-bit)
+	Memory size	: 1024 MB
+	Virtual hard disk
+		File size				: 8 GB
+		Hard disk tfile type	: VDI
+		Storage					: Fixed size
+	Network
+		Adapter 1
+			Attached to	: Bridge Adapter
+			Name		: en0: Ethernet
+			Advanced
+				Adapter Type		: Intel PRO/1000 MT Desktop
+				Promiscuous mode	: Allow All
+
+02. OS Installation
+	Basic configuration
+		Selected language	: English
+		Selected location	: other -> Europe -> France
+		Locales config		: US - en_US.UTF-8
+		Keyboard			: American English
+	Network configuration
+		Hostname		: debian
+		Domaine name	:
+	Users configuration
+		Root password	: root
+		Nonadm user		: roger
+			Password	: roger
+	Partion Disks
+		Partitioning method	: Manual
+			#1 2.4 GB	/
+			#2 4.2 GB	/usr
+			#3 2.0 GB	/swap
+	Package manager
+		Mirror counry	: France
+		Archive mirror	: ftp.fr.debian.org
+		HTTP Proxy		:
+	Refuse popularity-contest
+	Software selection
+		SSH server
+	Install the GRUB boot loader on a hard disk /dev/sda
+
+03.	Update and upgrade system and packages
+		root@debian:~# apt-get update
+		root@debian:~# apt-get upgrade
+		root@debian:~# sysctl -w net.ipv6.conf.all.disable_ipv6=1
+
+___ V.3 Network and Security Part ______________________________________________
+01.
+	Non root user was created durring OS installation
+02.
+	Log as root and install `sudo` package
+		root@debian:~# apt-get install sudo
+	Add roger to sudo's group
+		root@debian:~# adduser roger sudo
+	/! Exit from root and never come in back
+03.
+	roger@debian:~$ sudo vi /etc/network/interfaces
+	iface enp0s3 inet static
+		address 10.13.31.1
+		netmask 255.255.255.252
+		gateway 10.13.254.254
+	roger@debian:~$ sudo reboot
+04.
+	Through Guest machine
+		roger@debian:~$ sudo vi /etc/ssh/sshd_config
+			Port 2222
+			PermitRootLogin no
+		roger@debian:~$ sudo service sshd restart
+	Through Host machine
+		souakrim@42.fr:~$ ssh-keygen
+		souakrim@42.fr:~$ ssh-copy-id roger@10.13.31.1 -p 2222
+	Through Guest machine
+		roger@debian:~$ sudo vi /etc/ssh/sshd_config
+			PubkeyAuthentification yes
+			PasswordAuthentification no
+		roger@debian:~$ sudo service sshd restart
+	Now I can work on server through ssh from Host machine	
+		amalsago@42.fr:~$ ssh roger@10.13.31.1 -p 2222
+05/06/07.
+
+	roger@debian:~$ sudo apt-get install iptables-persistent
+	roger@debian:~$ cd /etc/init.d
+	roger@debian:/etc/init.d$ sudo vi firewall
+		
+		#!/bin/sh
+		
+		#Flush
+		iptables -F
+		iptables -X
+
+		# Policy
+		iptables -P OUTPUT DROP
+		iptables -P INPUT DROP
+		iptables -P FORWARD DROP
+
+		# Connexion established
+		iptables -A INPUT -m state --state ESTABLISHED,RELATED -m limit --limit 50/second --limit-burst 50 -j ACCEPT
+		iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+
+		# Loopback
+		iptables -A INPUT -i lo -j ACCEPT
+		iptables -A OUTPUT -o lo -j ACCEPT
+
+		# Anti-portscanning
+		iptables -N knock
+		iptables -A knock -m recent --rcheck --seconds 10 -j ACCEPT
+		iptables -A INPUT -m conntrack --ctstate NEW -p tcp --dport 1337 -j knock
+		iptables -A INPUT -m conntrack --ctstate NEW -p tcp --dport 22251 -m recent --set
+		iptables -A INPUT -m conntrack --ctstate NEW -p tcp -m multiport --dport 22250,22252 -m recent --remove
+
+		# Http
+		iptables -A INPUT -p tcp --dport 80 -m state --state NEW -m limit --limit 50/minute --limit-burst 200 -j ACCEPT
+		iptables -A INPUT -p tcp --dport 443 -m state --state NEW -m limit --limit 50/minute --limit-burst 200 -j ACCEPT
+		iptables -A OUTPUT -p tcp --dport 80 -j ACCEPT
+		iptables -A OUTPUT -p tcp --dport 443 -j ACCEPT
+
+		# DNS
+		iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT
+		iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
+				
+		# Drop all invalid packets
+		$IPT -A INPUT -m state --state INVALID -j DROP
+		$IPT -A FORWARD -m state --state INVALID -j DROP
+		$IPT -A OUTPUT -m state --state INVALID -j DROP
+
+		# Allow incoming and outgoing ping
+		$IPT -A INPUT -p icmp --icmp-type 8 -m state --state NEW,ESTABLISHED,RELATED -j ACCEPT
+		$IPT -A OUTPUT -p icmp --icmp-type 8 -m state --state NEW,ESTABLISHED,RELATED -j ACCEPT
+		
+	roger@debian:/etc/init.d$ sudo chmod +x firewall
+	roger@debian:/etc/init.d$ sudo sh firewall
+	roger@debian:/etc/init.d$ sudo netfilter-persistent save
+08.	
+	roger@debian:~$ sudo service --status-all
+09.	
+	roger@debian:~$ sudo vi /etc/cron.d/update_packages
+		#!/bin/bash
+		
+		apt-get update
+		(date && apt-get -y upgrade | tail -1; echo) &>> /var/log/update_script.log
+	roger@debian:~$ sudo chmod +x /etc/cron.d/update_packages
+	roger@debian:~$ sudo cron-tab -e
+		0 4 * * 2       /etc/cron.d/update_packages
+		@reboot         /etc/cron.d/update_packages
+10.	
+	roger@debian:~$ sudo vi /etc/cron.d/cron_integrity
+		#!/bin/bash
+
+		OLDSUM=`cat /var/lib/cron.md5`
+		NEWSUM=`md5sum /etc/crontab`
+
+		if [ "$OLDSUM" != "$NEWSUM" ]
+		then
+			md5sum /etc/crontab > /var/lib/cron.md5
+			printf "$(date)\nWARNING - CRONTAB WAS MODIFIED\n" | mail -s "Crontab was modified" root@localhost
+		fi
+	roger@debian:~$ sudo chmod +x /etc/cron.d/cron_integrity
+	roger@debian:~$ sudo cron-tab -e
+		...
+	sudo vi /etc/cron.d/update_packages	0 0 * * *       /etc/cron.d/cron_integrity
+
+___ V.4.1 ______________________________________________________________________
+0.	https://www.digitalocean.com/community/tutorials/how-to-create-a-ssl-certificate-on-apache-for-debian-8
